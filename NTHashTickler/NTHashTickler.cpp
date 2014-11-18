@@ -3,18 +3,17 @@
 
 #include "stdafx.h"
 #include <conio.h>
+#include <stdint.h>
 #include <Windows.h>
 #include <bcrypt.h>
 
-bool shouldStop = false;
-int maxPasswordLength = 12;
-//CRITICAL_SECTION criticalSection;
+char shouldStop = 0;
+short maxPasswordLength = 12;
 HANDLE hMutex;
 unsigned long long hashesGenerated = 0;
 unsigned char inputHashBytes[16] = { 0 };
 HANDLE *hThreads = NULL;
-BCRYPT_ALG_HANDLE phAlgorithm = NULL;
-const wchar_t * version = L"1.0";
+const char * version = "1.1";
 const char validChars[] = { 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,
                             0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F,
 							0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
@@ -22,132 +21,227 @@ const char validChars[] = { 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28
 							0x60, 0x61, 0x62, 0x63, 0x64, 0x65, 0x66, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F,
 							0x70, 0x71, 0x72, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x7B, 0x7C, 0x7D, 0x7E };
 
+// These are initialization values for the MD4 hash algorithm. See RFC 1320.
+const uint32_t INIT_A = 0x67452301;
+const uint32_t INIT_B = 0xefcdab89;
+const uint32_t INIT_C = 0x98badcfe;
+const uint32_t INIT_D = 0x10325476;
+const uint32_t SQRT_2 = 0x5a827999;
+const uint32_t SQRT_3 = 0x6ed9eba1;
+
 void PrintHelpText()
 {
-	wprintf(L"\nNTHashTickler v%s", version);
-	wprintf(L"\nWritten by Ryan Ries, myotherpcisacloud.com");
-	wprintf(L"\n\nUsage: C:\\> NTHashTickler.exe d79e1c308aa5bbcdeea8ed63df412da9 [8]");
-	wprintf(L"\n\nUses brute force to find a plain text input that generates an");
-	wprintf(L"\nNT hash that matches the one supplied by the user. An NT (or NTLM)");
-	wprintf(L"\nhash is the MD4 hash of the Unicode little endian plain text.");
-	wprintf(L"\nHexadecimal hash strings are not case sensitive.");
-	wprintf(L"\nThe second argument is optional and specifies the maximum password");
-	wprintf(L"\nlength for which to generate hashes. Default is 12. Smaller key spaces");
-	wprintf(L"\ntake less time to search.\n");
+	printf("\nNTHashTickler v%s", version);
+	printf("\nWritten by Ryan Ries, myotherpcisacloud.com");
+	printf("\n\nUsage: C:\\> NTHashTickler.exe d79e1c308aa5bbcdeea8ed63df412da9 [12]");
+	printf("\n\nUses brute force to find a plain text input that generates an");
+	printf("\nNT hash that matches the one supplied by the user. An NT (or NTLM)");
+	printf("\nhash is the MD4 hash of the Unicode little endian plain text.");
+	printf("\nHexadecimal hash strings are not case sensitive.");
+	printf("\nThe second argument is optional and specifies the maximum password");
+	printf("\nlength for which to generate hashes. Default is 12. Smaller key spaces");
+	printf("\ntake less time to search.\n");
 }
 
-wchar_t * DisplayError(DWORD NTStatusCode)
+// Return 0 if the input string is not a valid-looking MD4 hash. Return 1 if it is.
+char IsMD4HashString(char *input)
 {
-	wchar_t * message = NULL;
-	HMODULE hMod = LoadLibrary(L"NTDLL.DLL");
-	FormatMessage(
-		FORMAT_MESSAGE_ALLOCATE_BUFFER |
-		FORMAT_MESSAGE_FROM_SYSTEM |
-		FORMAT_MESSAGE_FROM_HMODULE,
-		hMod,
-		NTStatusCode,
-		MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-		(wchar_t *)&message, 0, NULL);	
+	const char nibbles[] = { "0123456789abcdefABCDEF" };
 
-	if (hMod != 0)
-		FreeLibrary(hMod);
-
-	return message;
-}
-
-bool IsMD4HashString(wchar_t * input)
-{
-	const wchar_t nibbles[] = { L"0123456789abcdef" };	
-
-	if (wcslen(input) != 32)
-		return false;
-
-	for (int x = 0; input[x]; x++)
-		input[x] = tolower(input[x]);	
+	if (strlen(input) != 32)	
+		return(0);	
 
 	for (int x = 0; input[x]; x++)
 	{
-		bool isNibble = false;
-		for (int y = 0; y < 16; y++)
+		short isNibble = 0;
+		for (int y = 0; y < (sizeof(nibbles) - 1); y++)
 		{
-			if (nibbles[y] == input[x])			
-				isNibble = true;			
+			if (nibbles[y] == input[x])
+			{
+				isNibble = 1;
+				break;
+			}
 		}
-		if (isNibble == false)
-			return false;
+		if (isNibble == 0)
+		{
+			OutputDebugStringA("Invalid character was found in input string!\n");
+			return(0);
+		}
 	}
+	return(1);
+}
 
-	return true;
+void NTHash(unsigned char *password, int length, uint32_t *output)
+{
+	uint32_t nt_buffer[16] = { 0 };
+	int i = 0;
+
+	for (; i < length / 2; i++)
+		nt_buffer[i] = password[2 * i] | (password[2 * i + 1] << 16);
+
+	// Padding
+	if (length % 2 == 1)
+		nt_buffer[i] = password[length - 1] | 0x800000;
+	else
+		nt_buffer[i] = 0x80;
+
+	nt_buffer[14] = length << 4;
+
+	uint32_t a = INIT_A;
+	uint32_t b = INIT_B;
+	uint32_t c = INIT_C;
+	uint32_t d = INIT_D;
+
+	/* Round 1 */
+	a += (d ^ (b & (c ^ d))) + nt_buffer[0]; a = (a << 3) | (a >> 29);
+	d += (c ^ (a & (b ^ c))) + nt_buffer[1]; d = (d << 7) | (d >> 25);
+	c += (b ^ (d & (a ^ b))) + nt_buffer[2]; c = (c << 11) | (c >> 21);
+	b += (a ^ (c & (d ^ a))) + nt_buffer[3]; b = (b << 19) | (b >> 13);
+
+	a += (d ^ (b & (c ^ d))) + nt_buffer[4]; a = (a << 3) | (a >> 29);
+	d += (c ^ (a & (b ^ c))) + nt_buffer[5]; d = (d << 7) | (d >> 25);
+	c += (b ^ (d & (a ^ b))) + nt_buffer[6]; c = (c << 11) | (c >> 21);
+	b += (a ^ (c & (d ^ a))) + nt_buffer[7]; b = (b << 19) | (b >> 13);
+
+	a += (d ^ (b & (c ^ d))) + nt_buffer[8]; a = (a << 3) | (a >> 29);
+	d += (c ^ (a & (b ^ c))) + nt_buffer[9]; d = (d << 7) | (d >> 25);
+	c += (b ^ (d & (a ^ b))) + nt_buffer[10]; c = (c << 11) | (c >> 21);
+	b += (a ^ (c & (d ^ a))) + nt_buffer[11]; b = (b << 19) | (b >> 13);
+
+	a += (d ^ (b & (c ^ d))) + nt_buffer[12]; a = (a << 3) | (a >> 29);
+	d += (c ^ (a & (b ^ c))) + nt_buffer[13]; d = (d << 7) | (d >> 25);
+	c += (b ^ (d & (a ^ b))) + nt_buffer[14]; c = (c << 11) | (c >> 21);
+	b += (a ^ (c & (d ^ a))) + nt_buffer[15]; b = (b << 19) | (b >> 13);
+
+	/* Round 2 */
+	a += ((b & (c | d)) | (c & d)) + nt_buffer[0] + SQRT_2; a = (a << 3) | (a >> 29);
+	d += ((a & (b | c)) | (b & c)) + nt_buffer[4] + SQRT_2; d = (d << 5) | (d >> 27);
+	c += ((d & (a | b)) | (a & b)) + nt_buffer[8] + SQRT_2; c = (c << 9) | (c >> 23);
+	b += ((c & (d | a)) | (d & a)) + nt_buffer[12] + SQRT_2; b = (b << 13) | (b >> 19);
+
+	a += ((b & (c | d)) | (c & d)) + nt_buffer[1] + SQRT_2; a = (a << 3) | (a >> 29);
+	d += ((a & (b | c)) | (b & c)) + nt_buffer[5] + SQRT_2; d = (d << 5) | (d >> 27);
+	c += ((d & (a | b)) | (a & b)) + nt_buffer[9] + SQRT_2; c = (c << 9) | (c >> 23);
+	b += ((c & (d | a)) | (d & a)) + nt_buffer[13] + SQRT_2; b = (b << 13) | (b >> 19);
+
+	a += ((b & (c | d)) | (c & d)) + nt_buffer[2] + SQRT_2; a = (a << 3) | (a >> 29);
+	d += ((a & (b | c)) | (b & c)) + nt_buffer[6] + SQRT_2; d = (d << 5) | (d >> 27);
+	c += ((d & (a | b)) | (a & b)) + nt_buffer[10] + SQRT_2; c = (c << 9) | (c >> 23);
+	b += ((c & (d | a)) | (d & a)) + nt_buffer[14] + SQRT_2; b = (b << 13) | (b >> 19);
+
+	a += ((b & (c | d)) | (c & d)) + nt_buffer[3] + SQRT_2; a = (a << 3) | (a >> 29);
+	d += ((a & (b | c)) | (b & c)) + nt_buffer[7] + SQRT_2; d = (d << 5) | (d >> 27);
+	c += ((d & (a | b)) | (a & b)) + nt_buffer[11] + SQRT_2; c = (c << 9) | (c >> 23);
+	b += ((c & (d | a)) | (d & a)) + nt_buffer[15] + SQRT_2; b = (b << 13) | (b >> 19);
+
+	/* Round 3 */
+	a += (d ^ c ^ b) + nt_buffer[0] + SQRT_3; a = (a << 3) | (a >> 29);
+	d += (c ^ b ^ a) + nt_buffer[8] + SQRT_3; d = (d << 9) | (d >> 23);
+	c += (b ^ a ^ d) + nt_buffer[4] + SQRT_3; c = (c << 11) | (c >> 21);
+	b += (a ^ d ^ c) + nt_buffer[12] + SQRT_3; b = (b << 15) | (b >> 17);
+
+	a += (d ^ c ^ b) + nt_buffer[2] + SQRT_3; a = (a << 3) | (a >> 29);
+	d += (c ^ b ^ a) + nt_buffer[10] + SQRT_3; d = (d << 9) | (d >> 23);
+	c += (b ^ a ^ d) + nt_buffer[6] + SQRT_3; c = (c << 11) | (c >> 21);
+	b += (a ^ d ^ c) + nt_buffer[14] + SQRT_3; b = (b << 15) | (b >> 17);
+
+	a += (d ^ c ^ b) + nt_buffer[1] + SQRT_3; a = (a << 3) | (a >> 29);
+	d += (c ^ b ^ a) + nt_buffer[9] + SQRT_3; d = (d << 9) | (d >> 23);
+	c += (b ^ a ^ d) + nt_buffer[5] + SQRT_3; c = (c << 11) | (c >> 21);
+	b += (a ^ d ^ c) + nt_buffer[13] + SQRT_3; b = (b << 15) | (b >> 17);
+
+	a += (d ^ c ^ b) + nt_buffer[3] + SQRT_3; a = (a << 3) | (a >> 29);
+	d += (c ^ b ^ a) + nt_buffer[11] + SQRT_3; d = (d << 9) | (d >> 23);
+	c += (b ^ a ^ d) + nt_buffer[7] + SQRT_3; c = (c << 11) | (c >> 21);
+	b += (a ^ d ^ c) + nt_buffer[15] + SQRT_3; b = (b << 15) | (b >> 17);
+
+	output[0] = a + INIT_A;
+	output[1] = b + INIT_B;
+	output[2] = c + INIT_C;
+	output[3] = d + INIT_D;
 }
 
 DWORD WINAPI Interrupt(LPVOID lpParam)
 {
-	_getch();
-	//EnterCriticalSection(&criticalSection);
+	_getch();	
 	WaitForSingleObject(hMutex, INFINITE);
-	shouldStop = true;
-	ReleaseMutex(hMutex);
-	//LeaveCriticalSection(&criticalSection);
-	return 0;
+	shouldStop = 1;
+	ReleaseMutex(hMutex);	
+	return(0);
 }
 
 DWORD WINAPI WorkerThread(LPVOID lpParam)
 {
-	unsigned long long threadLocalHashesGenerated = 0;
+	uint64_t threadLocalHashesGenerated = 0;
+	uint32_t hashBuffer[4] = { 0 };
+
 	while (true)
 	{
-		if (shouldStop)
+		if (shouldStop != 0)
 			break;
 
 		int passwordLength = rand() % maxPasswordLength + 1;
-		unsigned char * hashOut = new unsigned char[16];
-		unsigned char * randomBytes = new unsigned char[passwordLength * 2];
+		unsigned char hashOut[16] = { 0 };
+		unsigned char *randomBytes = new unsigned char[passwordLength + 1];
 
-		BCryptGenRandom(NULL, randomBytes, passwordLength * 2, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+		BCryptGenRandom(NULL, randomBytes, passwordLength, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
 
 		for (int x = 0; x < passwordLength; x++)
-		{
-			randomBytes[x * 2] = validChars[randomBytes[x * 2] % sizeof(validChars)];
-			randomBytes[(x * 2) + 1] = '\0';
-		}
+			randomBytes[x] = validChars[randomBytes[x] % sizeof(validChars)];
+		
+		randomBytes[passwordLength] = '\0';
 
-		BCRYPT_HASH_HANDLE phHash = NULL;
-		BCryptCreateHash(phAlgorithm, &phHash, 0, 0, 0, 0, 0);
-		BCryptHashData(phHash, randomBytes, passwordLength * 2, 0);
-		BCryptFinishHash(phHash, hashOut, 16, 0);
-		BCryptDestroyHash(phHash);
+		NTHash(randomBytes, passwordLength, hashBuffer);
+
+		hashOut[3] = (hashBuffer[0] & 0xFF000000UL) >> 24;
+		hashOut[2] = (hashBuffer[0] & 0x00FF0000UL) >> 16;
+		hashOut[1] = (hashBuffer[0] & 0x0000FF00UL) >> 8;
+		hashOut[0] = (hashBuffer[0] & 0x000000FFUL);
+
+		hashOut[7] = (hashBuffer[1] & 0xFF000000UL) >> 24;
+		hashOut[6] = (hashBuffer[1] & 0x00FF0000UL) >> 16;
+		hashOut[5] = (hashBuffer[1] & 0x0000FF00UL) >> 8;
+		hashOut[4] = (hashBuffer[1] & 0x000000FFUL);
+
+		hashOut[11] = (hashBuffer[2] & 0xFF000000UL) >> 24;
+		hashOut[10] = (hashBuffer[2] & 0x00FF0000UL) >> 16;
+		hashOut[9] = (hashBuffer[2] & 0x0000FF00UL) >> 8;
+		hashOut[8] = (hashBuffer[2] & 0x000000FFUL);
+
+		hashOut[15] = (hashBuffer[3] & 0xFF000000UL) >> 24;
+		hashOut[14] = (hashBuffer[3] & 0x00FF0000UL) >> 16;
+		hashOut[13] = (hashBuffer[3] & 0x0000FF00UL) >> 8;
+		hashOut[12] = (hashBuffer[3] & 0x000000FFUL);
+		
 		threadLocalHashesGenerated++;
 
 		if (memcmp(inputHashBytes, hashOut, 16) == 0)
 		{
-			//EnterCriticalSection(&criticalSection);
 			WaitForSingleObject(hMutex, INFINITE);
-			wprintf(L"\nMatch found!\n");
+			printf("\nMatch found!\n");
 
-			wprintf(L"Pass Len: %2i\n", passwordLength);
-			wprintf(L"Chars in: ");
-			for (int x = 0; x < passwordLength * 2; x += 2)
+			printf("Pass Len: %2d\n", passwordLength);
+			printf("Chars in: ");
+			for (int x = 0; x < passwordLength; x++)
 			{
-				wprintf(L"%2c %2c ", randomBytes[x], randomBytes[x + 1]);
+				printf("%2c ", randomBytes[x]);
 			}
-			wprintf(L"\nBytes in: ");
-			for (int x = 0; x < passwordLength * 2; x += 2)
+			printf("\nBytes in: ");
+			for (int x = 0; x < passwordLength; x++)
 			{
-				wprintf(L"%02x %02x ", randomBytes[x], randomBytes[x + 1]);
+				printf("%02x ", randomBytes[x]);
 			}
-			wprintf(L"\n");
-			wprintf(L"Hash out: ");
+			printf("\n");
+			printf("Hash out: ");
 			for (int x = 0; x < 16; x++)
 			{
-				wprintf(L"%02x ", hashOut[x]);
+				printf("%02x ", hashOut[x]);
 			}
-			wprintf(L"\n\n");			
-			shouldStop = true;
-			//LeaveCriticalSection(&criticalSection);
+			printf("\n\n");			
+			shouldStop = 1;			
 			ReleaseMutex(hMutex);
 		}
-
-		delete hashOut;
+		
 		delete randomBytes;
 	}
 	WaitForSingleObject(hMutex, INFINITE);
@@ -156,36 +250,36 @@ DWORD WINAPI WorkerThread(LPVOID lpParam)
 	return 0;
 }
 
-int _tmain(int argc, _TCHAR* argv[])
+int main(int argc, char *argv[])
 {
-	NTSTATUS status = NULL;
+	//NTSTATUS status = 0;
 	SYSTEM_INFO systemInfo;
-	LARGE_INTEGER startingTime, endingTime;
-	LARGE_INTEGER frequency;	
+	LARGE_INTEGER startingTime, endingTime, frequency;	
+	double elapsed = 0;
 
-	hMutex = CreateMutex(NULL, FALSE, L"Tickler");
-	//InitializeCriticalSection(&criticalSection);
+	hMutex = CreateMutexW(NULL, FALSE, L"Tickler");
 
-	wprintf(L"\n");
+	printf("\n");
+
 	if ((argc != 2) & (argc != 3))
 	{
 		PrintHelpText();
-		return 0;
+		return(0);
 	}
-	
-	if (IsMD4HashString(argv[1]) == false)
+
+	if (IsMD4HashString(argv[1]) == 0)
 	{
 		PrintHelpText();
-		return 0;
+		return(0);
 	}
 
 	if (argc == 3)	
-		maxPasswordLength = _wtoi(argv[2]);
+		maxPasswordLength = atoi(argv[2]);
 
 	if ((maxPasswordLength < 1) || (maxPasswordLength > 120))
 	{
 		PrintHelpText();
-		return 0;
+		return(0);
 	}
 	
 	for (int x = 0; x < 32; x += 2)
@@ -196,35 +290,24 @@ int _tmain(int argc, _TCHAR* argv[])
 		inputHashBytes[x / 2] = (char)strtoul(b, NULL, 16);
 	}
 
-	status = BCryptOpenAlgorithmProvider(&phAlgorithm, BCRYPT_MD4_ALGORITHM, NULL, 0);
-	if (status != 0)
-	{
-		wprintf(L"ERROR: Failed to initialize MD4 algorithm provider.\nBCryptOpenAlgorithmProvider returned %s", DisplayError(status));
-		return status;
-	}
-	else
-	{
-		wprintf(L"BCryptOpenAlgorithmProvider: %s", DisplayError(status));
-	}
-
 	QueryPerformanceFrequency(&frequency);
 	if (frequency.QuadPart == 0)
 	{
-		wprintf(L"ERROR: Unable to query performance frequency!");
-		return 1;
+		printf("ERROR: Unable to query performance frequency!\n");
+		return(1);
 	}
 
 	GetSystemInfo(&systemInfo);
 	if (systemInfo.dwNumberOfProcessors < 1)
 	{
-		wprintf(L"ERROR: Unable to find number of CPUs!");
-		return 1;
+		printf("ERROR: Unable to find number of CPUs!\n");
+		return(1);
 	}
 	
-	wprintf(L"%i CPUs found.\n", systemInfo.dwNumberOfProcessors);
-	wprintf(L"Max password length is %i characters.\n", maxPasswordLength);
-	wprintf(L"Searching for %s as MD4(Unicode(password)).\n", argv[1]);
-	wprintf(L"Hashing will now commence. Press any key to interrupt the program.\n");
+	printf("%i CPUs found.\n", systemInfo.dwNumberOfProcessors);
+	printf("Max password length is %i characters.\n", maxPasswordLength);
+	printf("Searching for %s as MD4(Unicode(password)).\n", argv[1]);
+	printf("Hashing will now commence. Press any key to interrupt the program.\n");
 	QueryPerformanceCounter(&startingTime);
 	
 	hThreads = new HANDLE[systemInfo.dwNumberOfProcessors];
@@ -237,17 +320,15 @@ int _tmain(int argc, _TCHAR* argv[])
 
 	WaitForMultipleObjects(systemInfo.dwNumberOfProcessors, hThreads, TRUE, INFINITE);
 	CloseHandle(hMutex);
-	QueryPerformanceCounter(&endingTime);	
-
-	//DeleteCriticalSection(&criticalSection);
+	QueryPerformanceCounter(&endingTime);		
 	
 	delete hThreads;
 
-	if (phAlgorithm != NULL)
-		BCryptCloseAlgorithmProvider(phAlgorithm, 0);
+	//if (phAlgorithm != NULL)
+	//	BCryptCloseAlgorithmProvider(phAlgorithm, 0);
 
-	double elapsed = (double)(endingTime.QuadPart - startingTime.QuadPart) / frequency.QuadPart;
-	wprintf(L"\n%lu hashes generated in %.2f seconds (%.0f hashes/second.)\n", hashesGenerated, elapsed, hashesGenerated / elapsed);
+	elapsed = (double)(endingTime.QuadPart - startingTime.QuadPart) / frequency.QuadPart;
+	printf("\n%lu hashes generated in %.2f seconds (%.0f hashes/second.)\n", hashesGenerated, elapsed, hashesGenerated / elapsed);	
 	
 	return 0;
 }
