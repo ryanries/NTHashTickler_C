@@ -8,9 +8,9 @@
 #include <bcrypt.h>
 
 char shouldStop = 0;
-short maxPasswordLength = 12;
+uint8_t maxPasswordLength = 12;
 CRITICAL_SECTION CritSec;
-unsigned long long hashesGenerated = 0;
+uint64_t hashesGenerated = 0;
 unsigned char inputHashBytes[16] = { 0 };
 HANDLE *hThreads = NULL;
 const char * version = "1.2";
@@ -163,7 +163,7 @@ void NTHash(unsigned char *password, int length, uint32_t *output)
 
 DWORD WINAPI Interrupt(LPVOID lpParam)
 {
-	_getch();	
+	int x = _getch();
 	shouldStop = 1;
 	return(0);
 }
@@ -178,15 +178,15 @@ DWORD WINAPI WorkerThread(LPVOID lpParam)
 		if (shouldStop != 0)
 			break;
 
-		uint8_t passwordLength = rand() % maxPasswordLength + 1;
+		unsigned int passwordLength = rand() % maxPasswordLength + 1;
 		uint8_t hashOut[16];
 		uint8_t randomBytes[64];
 
 		BCryptGenRandom(NULL, randomBytes, passwordLength, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
 
-		for (int x = 0; x < passwordLength; x++)
-			randomBytes[x] = validChars[randomBytes[x] % sizeof(validChars)];
-		
+		for (unsigned int x = 0; x < passwordLength; x++)
+			randomBytes[x] = validChars[randomBytes[x] % sizeof(validChars)];		
+
 		randomBytes[passwordLength] = '\0';		
 
 		NTHash(randomBytes, passwordLength, hashBuffer);
@@ -223,18 +223,18 @@ DWORD WINAPI WorkerThread(LPVOID lpParam)
 
 			printf("Pass Len: %2d\n", passwordLength);
 			printf("Chars in: ");
-			for (int x = 0; x < passwordLength; x++)
+			for (unsigned int x = 0; x < passwordLength; x++)
 			{
 				printf("%2c ", randomBytes[x]);
 			}
 			printf("\nBytes in: ");
-			for (int x = 0; x < passwordLength; x++)
+			for (unsigned int x = 0; x < passwordLength; x++)
 			{
 				printf("%02x ", randomBytes[x]);
 			}
 			printf("\n");
 			printf("Hash out: ");
-			for (int x = 0; x < 16; x++)
+			for (unsigned int x = 0; x < 16; x++)
 			{
 				printf("%02x ", hashOut[x]);
 			}
@@ -243,9 +243,12 @@ DWORD WINAPI WorkerThread(LPVOID lpParam)
 			LeaveCriticalSection(&CritSec);
 		}				
 	}
+
+
 	EnterCriticalSection(&CritSec);
 	hashesGenerated += threadLocalHashesGenerated;
 	LeaveCriticalSection(&CritSec);
+
 	return 0;
 }
 
@@ -278,7 +281,7 @@ int main(int argc, char *argv[])
 	if (argc == 3)	
 		maxPasswordLength = atoi(argv[2]);
 
-	if ((maxPasswordLength < 1) || (maxPasswordLength > 120))
+	if ((maxPasswordLength < 1) || (maxPasswordLength > 30))
 	{
 		PrintHelpText();
 		return(0);
@@ -324,7 +327,7 @@ int main(int argc, char *argv[])
 	
 	QueryPerformanceCounter(&endingTime);		
 	
-	delete hThreads;
+	delete[] hThreads;
 
 	elapsed = (double)(endingTime.QuadPart - startingTime.QuadPart) / frequency.QuadPart;
 	printf("\n%lu hashes generated in %.2f seconds (%.0f hashes/second.)\n", hashesGenerated, elapsed, hashesGenerated / elapsed);		
