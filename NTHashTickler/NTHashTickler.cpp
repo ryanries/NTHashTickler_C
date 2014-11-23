@@ -9,11 +9,11 @@
 
 char shouldStop = 0;
 short maxPasswordLength = 12;
-HANDLE hMutex;
+CRITICAL_SECTION CritSec;
 unsigned long long hashesGenerated = 0;
 unsigned char inputHashBytes[16] = { 0 };
 HANDLE *hThreads = NULL;
-const char * version = "1.1";
+const char * version = "1.2";
 const char validChars[] = { 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,
                             0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F,
 							0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
@@ -72,7 +72,7 @@ char IsMD4HashString(char *input)
 }
 
 void NTHash(unsigned char *password, int length, uint32_t *output)
-{
+{	
 	uint32_t nt_buffer[16] = { 0 };
 	int i = 0;
 
@@ -164,9 +164,7 @@ void NTHash(unsigned char *password, int length, uint32_t *output)
 DWORD WINAPI Interrupt(LPVOID lpParam)
 {
 	_getch();	
-	WaitForSingleObject(hMutex, INFINITE);
 	shouldStop = 1;
-	ReleaseMutex(hMutex);	
 	return(0);
 }
 
@@ -180,16 +178,16 @@ DWORD WINAPI WorkerThread(LPVOID lpParam)
 		if (shouldStop != 0)
 			break;
 
-		int passwordLength = rand() % maxPasswordLength + 1;
-		unsigned char hashOut[16] = { 0 };
-		unsigned char *randomBytes = new unsigned char[passwordLength + 1];
+		uint8_t passwordLength = rand() % maxPasswordLength + 1;
+		uint8_t hashOut[16];
+		uint8_t randomBytes[64];
 
 		BCryptGenRandom(NULL, randomBytes, passwordLength, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
 
 		for (int x = 0; x < passwordLength; x++)
 			randomBytes[x] = validChars[randomBytes[x] % sizeof(validChars)];
 		
-		randomBytes[passwordLength] = '\0';
+		randomBytes[passwordLength] = '\0';		
 
 		NTHash(randomBytes, passwordLength, hashBuffer);
 
@@ -217,7 +215,10 @@ DWORD WINAPI WorkerThread(LPVOID lpParam)
 
 		if (memcmp(inputHashBytes, hashOut, 16) == 0)
 		{
-			WaitForSingleObject(hMutex, INFINITE);
+			EnterCriticalSection(&CritSec);
+			if (shouldStop)
+				break;
+
 			printf("\nMatch found!\n");
 
 			printf("Pass Len: %2d\n", passwordLength);
@@ -239,25 +240,26 @@ DWORD WINAPI WorkerThread(LPVOID lpParam)
 			}
 			printf("\n\n");			
 			shouldStop = 1;			
-			ReleaseMutex(hMutex);
-		}
-		
-		delete randomBytes;
+			LeaveCriticalSection(&CritSec);
+		}				
 	}
-	WaitForSingleObject(hMutex, INFINITE);
+	EnterCriticalSection(&CritSec);
 	hashesGenerated += threadLocalHashesGenerated;
-	ReleaseMutex(hMutex);
+	LeaveCriticalSection(&CritSec);
 	return 0;
 }
 
 int main(int argc, char *argv[])
-{
-	//NTSTATUS status = 0;
+{	
 	SYSTEM_INFO systemInfo;
 	LARGE_INTEGER startingTime, endingTime, frequency;	
 	double elapsed = 0;
 
-	hMutex = CreateMutexW(NULL, FALSE, L"Tickler");
+	if (!InitializeCriticalSectionAndSpinCount(&CritSec, 0xff000000))
+	{
+		printf("ERROR: Failed to initialize critical section!\n");
+		return(1);
+	}
 
 	printf("\n");
 
@@ -319,17 +321,13 @@ int main(int argc, char *argv[])
 	CreateThread(NULL, 0, Interrupt, NULL, 0, NULL);
 
 	WaitForMultipleObjects(systemInfo.dwNumberOfProcessors, hThreads, TRUE, INFINITE);
-	CloseHandle(hMutex);
+	
 	QueryPerformanceCounter(&endingTime);		
 	
 	delete hThreads;
 
-	//if (phAlgorithm != NULL)
-	//	BCryptCloseAlgorithmProvider(phAlgorithm, 0);
-
 	elapsed = (double)(endingTime.QuadPart - startingTime.QuadPart) / frequency.QuadPart;
-	printf("\n%lu hashes generated in %.2f seconds (%.0f hashes/second.)\n", hashesGenerated, elapsed, hashesGenerated / elapsed);	
-	
-	return 0;
+	printf("\n%lu hashes generated in %.2f seconds (%.0f hashes/second.)\n", hashesGenerated, elapsed, hashesGenerated / elapsed);		
+	return(0);
 }
 
