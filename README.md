@@ -14,4 +14,4 @@ v1.0:
 ![Screenshot](./screen1.png)
 
 v1.3:
-![Screenshot](./screen1.png)
+![Screenshot](./screen2.png)
