@@ -1,19 +1,20 @@
 // NTHashTickler.cpp : Defines the entry point for the console application.
-//
+// Ryan Ries, myotherpcisacloud.com
 
-#include "stdafx.h"
+#define _CRT_RAND_S
 #include <conio.h>
 #include <stdint.h>
 #include <Windows.h>
-#include <bcrypt.h>
+#include <stdlib.h>
+#include <stdio.h>
 
-char shouldStop = 0;
-uint8_t maxPasswordLength = 12;
+BOOL G_ShouldStop = FALSE;
+uint8_t MaxPasswordLength = 12;
 CRITICAL_SECTION CritSec;
 uint64_t hashesGenerated = 0;
 unsigned char inputHashBytes[16] = { 0 };
 HANDLE *hThreads = NULL;
-const char * version = "1.2";
+const char *Version = "1.3";
 const char validChars[] = { 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,
                             0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F,
 							0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
@@ -31,7 +32,7 @@ const uint32_t SQRT_3 = 0x6ed9eba1;
 
 void PrintHelpText()
 {
-	printf("\nNTHashTickler v%s", version);
+	printf("\nNTHashTickler v%s", Version);
 	printf("\nWritten by Ryan Ries, myotherpcisacloud.com");
 	printf("\n\nUsage: C:\\> NTHashTickler.exe d79e1c308aa5bbcdeea8ed63df412da9 [12]");
 	printf("\n\nUses brute force to find a plain text input that generates an");
@@ -64,7 +65,7 @@ char IsMD4HashString(char *input)
 		}
 		if (isNibble == 0)
 		{
-			OutputDebugStringA("Invalid character was found in input string!\n");
+			OutputDebugString(L"Invalid character was found in input string!\n");
 			return(0);
 		}
 	}
@@ -74,7 +75,7 @@ char IsMD4HashString(char *input)
 void NTHash(unsigned char *password, int length, uint32_t *output)
 {	
 	uint32_t nt_buffer[16] = { 0 };
-	int i = 0;
+	uint8_t i = 0;
 
 	for (; i < length / 2; i++)
 		nt_buffer[i] = password[2 * i] | (password[2 * i + 1] << 16);
@@ -161,76 +162,82 @@ void NTHash(unsigned char *password, int length, uint32_t *output)
 	output[3] = d + INIT_D;
 }
 
-DWORD WINAPI Interrupt(LPVOID lpParam)
+DWORD WINAPI Interrupt(LPVOID LParam)
 {
-	int x = _getch();
-	shouldStop = 1;
+	UNREFERENCED_PARAMETER(LParam);		
+	_getch();
+	G_ShouldStop = TRUE;
 	return(0);
 }
 
-DWORD WINAPI WorkerThread(LPVOID lpParam)
+DWORD WINAPI WorkerThread(LPVOID LParam)
 {
-	uint64_t threadLocalHashesGenerated = 0;
+	UNREFERENCED_PARAMETER(LParam);
+
+	uint64_t Rand = 0;
+	uint64_t ThreadLocalHashesGenerated = 0;
 	uint32_t hashBuffer[4] = { 0 };
 
-	while (true)
+	while (G_ShouldStop == FALSE)
 	{
-		if (shouldStop != 0)
+		if (G_ShouldStop == TRUE)
+		{
 			break;
-
-		unsigned int passwordLength = rand() % maxPasswordLength + 1;
+		}
+		uint8_t PasswordLength = (Rand % MaxPasswordLength) + 1;
 		uint8_t hashOut[16];
-		uint8_t randomBytes[64];
+		uint8_t RandomBytes[64] = { 0 };
 
-		BCryptGenRandom(NULL, randomBytes, passwordLength, BCRYPT_USE_SYSTEM_PREFERRED_RNG);
+		for (uint8_t x = 0; x < PasswordLength; x++)
+		{
+			Rand = __rdtsc() + rand();
+			RandomBytes[x] = validChars[Rand % sizeof(validChars)];
+		}
 
-		for (unsigned int x = 0; x < passwordLength; x++)
-			randomBytes[x] = validChars[randomBytes[x] % sizeof(validChars)];		
+		NTHash(RandomBytes, PasswordLength, hashBuffer);
 
-		randomBytes[passwordLength] = '\0';		
+		hashOut[3] = (uint8_t)((hashBuffer[0] & 0xFF000000) >> 24);
+		hashOut[2] = (uint8_t)((hashBuffer[0] & 0x00FF0000) >> 16);
+		hashOut[1] = (uint8_t)((hashBuffer[0] & 0x0000FF00) >> 8);
+		hashOut[0] = (uint8_t)((hashBuffer[0] & 0x000000FF));
 
-		NTHash(randomBytes, passwordLength, hashBuffer);
+		hashOut[7] = (uint8_t)((hashBuffer[1] & 0xFF000000) >> 24);
+		hashOut[6] = (uint8_t)((hashBuffer[1] & 0x00FF0000) >> 16);
+		hashOut[5] = (uint8_t)((hashBuffer[1] & 0x0000FF00) >> 8);
+		hashOut[4] = (uint8_t)((hashBuffer[1] & 0x000000FF));
 
-		hashOut[3] = (hashBuffer[0] & 0xFF000000UL) >> 24;
-		hashOut[2] = (hashBuffer[0] & 0x00FF0000UL) >> 16;
-		hashOut[1] = (hashBuffer[0] & 0x0000FF00UL) >> 8;
-		hashOut[0] = (hashBuffer[0] & 0x000000FFUL);
+		hashOut[11] = (uint8_t)((hashBuffer[2] & 0xFF000000) >> 24);
+		hashOut[10] = (uint8_t)((hashBuffer[2] & 0x00FF0000) >> 16);
+		hashOut[9]  = (uint8_t)((hashBuffer[2] & 0x0000FF00) >> 8);
+		hashOut[8]  = (uint8_t)((hashBuffer[2] & 0x000000FF));
 
-		hashOut[7] = (hashBuffer[1] & 0xFF000000UL) >> 24;
-		hashOut[6] = (hashBuffer[1] & 0x00FF0000UL) >> 16;
-		hashOut[5] = (hashBuffer[1] & 0x0000FF00UL) >> 8;
-		hashOut[4] = (hashBuffer[1] & 0x000000FFUL);
-
-		hashOut[11] = (hashBuffer[2] & 0xFF000000UL) >> 24;
-		hashOut[10] = (hashBuffer[2] & 0x00FF0000UL) >> 16;
-		hashOut[9] = (hashBuffer[2] & 0x0000FF00UL) >> 8;
-		hashOut[8] = (hashBuffer[2] & 0x000000FFUL);
-
-		hashOut[15] = (hashBuffer[3] & 0xFF000000UL) >> 24;
-		hashOut[14] = (hashBuffer[3] & 0x00FF0000UL) >> 16;
-		hashOut[13] = (hashBuffer[3] & 0x0000FF00UL) >> 8;
-		hashOut[12] = (hashBuffer[3] & 0x000000FFUL);
+		hashOut[15] = (uint8_t)((hashBuffer[3] & 0xFF000000) >> 24);
+		hashOut[14] = (uint8_t)((hashBuffer[3] & 0x00FF0000) >> 16);
+		hashOut[13] = (uint8_t)((hashBuffer[3] & 0x0000FF00) >> 8);
+		hashOut[12] = (uint8_t)((hashBuffer[3] & 0x000000FF));
 		
-		threadLocalHashesGenerated++;
+		ThreadLocalHashesGenerated++;
 
 		if (memcmp(inputHashBytes, hashOut, 16) == 0)
 		{
 			EnterCriticalSection(&CritSec);
-			if (shouldStop)
+			if (G_ShouldStop)
+			{
+				LeaveCriticalSection(&CritSec);
 				break;
-
+			}
 			printf("\nMatch found!\n");
 
-			printf("Pass Len: %2d\n", passwordLength);
+			printf("Pass Len: %2d\n", PasswordLength);
 			printf("Chars in: ");
-			for (unsigned int x = 0; x < passwordLength; x++)
+			for (unsigned int x = 0; x < PasswordLength; x++)
 			{
-				printf("%2c ", randomBytes[x]);
+				printf("%2c ", RandomBytes[x]);
 			}
 			printf("\nBytes in: ");
-			for (unsigned int x = 0; x < passwordLength; x++)
+			for (unsigned int x = 0; x < PasswordLength; x++)
 			{
-				printf("%02x ", randomBytes[x]);
+				printf("%02x ", RandomBytes[x]);
 			}
 			printf("\n");
 			printf("Hash out: ");
@@ -239,24 +246,26 @@ DWORD WINAPI WorkerThread(LPVOID lpParam)
 				printf("%02x ", hashOut[x]);
 			}
 			printf("\n\n");			
-			shouldStop = 1;			
+			G_ShouldStop = TRUE;
 			LeaveCriticalSection(&CritSec);
 		}				
 	}
 
-
 	EnterCriticalSection(&CritSec);
-	hashesGenerated += threadLocalHashesGenerated;
+	hashesGenerated += ThreadLocalHashesGenerated;
 	LeaveCriticalSection(&CritSec);
 
-	return 0;
+	return(0);
 }
 
 int main(int argc, char *argv[])
 {	
-	SYSTEM_INFO systemInfo;
-	LARGE_INTEGER startingTime, endingTime, frequency;	
-	double elapsed = 0;
+	SYSTEM_INFO SystemInfo            = { 0 };
+	LARGE_INTEGER StartingTime        = { 0 };
+	LARGE_INTEGER EndingTime          = { 0 };
+	LARGE_INTEGER Frequency           = { 0 };
+	LARGE_INTEGER ElapsedMicroseconds = { 0 };
+	float ElapsedSeconds              = 0;
 
 	if (!InitializeCriticalSectionAndSpinCount(&CritSec, 0xff000000))
 	{
@@ -278,10 +287,12 @@ int main(int argc, char *argv[])
 		return(0);
 	}
 
-	if (argc == 3)	
-		maxPasswordLength = atoi(argv[2]);
+	if (argc == 3)
+	{
+		MaxPasswordLength = (uint8_t)atoi(argv[2]);
+	}
 
-	if ((maxPasswordLength < 1) || (maxPasswordLength > 30))
+	if ((MaxPasswordLength < 1) || (MaxPasswordLength > 30))
 	{
 		PrintHelpText();
 		return(0);
@@ -295,42 +306,44 @@ int main(int argc, char *argv[])
 		inputHashBytes[x / 2] = (char)strtoul(b, NULL, 16);
 	}
 
-	QueryPerformanceFrequency(&frequency);
-	if (frequency.QuadPart == 0)
+	QueryPerformanceFrequency(&Frequency);
+	if (Frequency.QuadPart == 0)
 	{
 		printf("ERROR: Unable to query performance frequency!\n");
 		return(1);
 	}
 
-	GetSystemInfo(&systemInfo);
-	if (systemInfo.dwNumberOfProcessors < 1)
+	GetSystemInfo(&SystemInfo);
+	if (SystemInfo.dwNumberOfProcessors < 1)
 	{
 		printf("ERROR: Unable to find number of CPUs!\n");
 		return(1);
 	}
 	
-	printf("%i CPUs found.\n", systemInfo.dwNumberOfProcessors);
-	printf("Max password length is %i characters.\n", maxPasswordLength);
+	printf("%i CPUs found.\n", SystemInfo.dwNumberOfProcessors);
+	printf("Max password length is %i characters.\n", MaxPasswordLength);
 	printf("Searching for %s as MD4(Unicode(password)).\n", argv[1]);
 	printf("Hashing will now commence. Press any key to interrupt the program.\n");
-	QueryPerformanceCounter(&startingTime);
+	QueryPerformanceCounter(&StartingTime);
 	
-	hThreads = new HANDLE[systemInfo.dwNumberOfProcessors];
-	for (unsigned int x = 0; x < systemInfo.dwNumberOfProcessors; x++)
+	CreateThread(NULL, 0, Interrupt, NULL, 0, NULL);
+
+	hThreads = new HANDLE[SystemInfo.dwNumberOfProcessors];
+	for (unsigned int x = 0; x < SystemInfo.dwNumberOfProcessors; x++)
 	{
 		hThreads[x] = CreateThread(NULL, 0, WorkerThread, NULL, 0, NULL);
 	}
 
-	CreateThread(NULL, 0, Interrupt, NULL, 0, NULL);
-
-	WaitForMultipleObjects(systemInfo.dwNumberOfProcessors, hThreads, TRUE, INFINITE);
+	WaitForMultipleObjects(SystemInfo.dwNumberOfProcessors, hThreads, TRUE, INFINITE);
 	
-	QueryPerformanceCounter(&endingTime);		
-	
-	delete[] hThreads;
+	QueryPerformanceCounter(&EndingTime);
 
-	elapsed = (double)(endingTime.QuadPart - startingTime.QuadPart) / frequency.QuadPart;
-	printf("\n%lu hashes generated in %.2f seconds (%.0f hashes/second.)\n", hashesGenerated, elapsed, hashesGenerated / elapsed);		
+	ElapsedMicroseconds.QuadPart = EndingTime.QuadPart - StartingTime.QuadPart;
+	ElapsedMicroseconds.QuadPart *= 1000000;
+	ElapsedMicroseconds.QuadPart /= Frequency.QuadPart;
+
+	ElapsedSeconds = (ElapsedMicroseconds.QuadPart / 1000.0f) / 1000.0f;
+
+	printf("\n%lu hashes generated in %.2f seconds (%d hashes/second.)\n", hashesGenerated, ElapsedSeconds, (int)(hashesGenerated / ElapsedSeconds));
 	return(0);
 }
-
